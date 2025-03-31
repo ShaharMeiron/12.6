@@ -1,174 +1,132 @@
 import socket
-import logging
-from typing import Optional, Tuple, List
+import msvcrt
 
-SERVER_IP = '127.0.0.1'  # Change to server IP
+SERVER_IP = '127.0.0.1'
 SERVER_PORT = 5555
 
 
-def send_message(sock: socket.socket, name: str, command: str, args: List[str]) -> bool:
-	"""Send a properly formatted message to the server"""
+def format_message(username: str, command: str, args: list[str]) -> bytes:
+	"""Formats message EXACTLY to server protocol"""
+	# Encode username with 2-byte length prefix
+	username_encoded = username.encode()
+	username_part = f"{len(username_encoded):02}{username_encoded.decode()}"
+
+	# Encode command (1 byte)
+	command_part = command
+
+	# Encode arguments
+	args_count = f"{len(args)}"
+	args_part = ""
+	for arg in args:
+		arg_encoded = arg.encode()
+		args_part += f"{len(arg_encoded):04}{arg_encoded.decode()}"
+
+	# Combine all parts
+	return f"{username_part}{command_part}{args_count}{args_part}".encode()
+
+
+def send_login(sock: socket.socket, username: str) -> bool:
+	"""Command 0: Login with no arguments"""
 	try:
-		# Encode name with length prefix
-		name_encoded = name.encode()
-		name_length = f"{len(name_encoded):02d}".encode()
-
-		# Encode command
-		command_encoded = command.encode()
-
-		# Encode arguments
-		args_count = f"{len(args)}".encode()
-		args_encoded = []
-		for arg in args:
-			arg_encoded = arg.encode()
-			args_encoded.append(f"{len(arg_encoded):04d}".encode() + arg_encoded)
-
-		# Construct full message
-		message = (
-				name_length + name_encoded +
-				command_encoded + args_count +
-				b"".join(args_encoded)
-		)
-
-		sock.sendall(message)
+		sock.send(format_message(username, "0", []))
 		return True
-	except Exception as e:
-		logging.error(f"Failed to send message: {e}")
+	except:
 		return False
 
 
-def receive_response(sock: socket.socket) -> Optional[Tuple[int, bytes]]:
-	"""Receive server response with length prefix"""
+def send_public_message(sock: socket.socket, username: str, message: str) -> bool:
+	"""Command 1: Public message (1 argument)"""
 	try:
-		# Read length prefix (first 4 bytes)
-		length_bytes = sock.recv(4)
-		if not length_bytes:
-			return None
-
-		length = int(length_bytes.decode())
-
-		# Read the rest of the message
-		data = sock.recv(length)
-		while len(data) < length:
-			data += sock.recv(length - len(data))
-
-		# Split time and actual message
-		time = data[:6].decode()
-		message = data[6:]
-
-		return (length, message)
-	except Exception as e:
-		logging.error(f"Failed to receive response: {e}")
-		return None
+		sock.send(format_message(username, "1", [message]))
+		return True
+	except:
+		return False
 
 
-def handle_user_commands(sock: socket.socket, username: str):
-	"""Interactive command handler"""
-	print("\nAvailable commands:")
-	print("1. Send message to all")
-	print("2. Moderate user (add @)")
-	print("3. Unmoderate user (remove @)")
-	print("4. Kick user")
-	print("5. Mute user")
-	print("6. Unmute user")
-	print("7. Send private message")
-	print("8. Quit")
+def send_private_message(sock: socket.socket, username: str, target: str, message: str) -> bool:
+	"""Command 7: Private DM (2 arguments)"""
+	try:
+		sock.send(format_message(username, "7", [target, message]))
+		return True
+	except:
+		return False
 
-	while True:
-		try:
-			cmd = input("\nEnter command number (1-8): ")
 
-			if cmd == "1":  # Public message
-				message = input("Enter your message: ")
-				if send_message(sock, username, "1", [message]):
-					print("Message sent!")
-
-			elif cmd == "2" and username.startswith("@"):  # Moderate
-				target = input("Enter username to moderate: ")
-				if send_message(sock, username, "2", [target]):
-					print(f"Moderation request for {target} sent")
-
-			elif cmd == "3" and username.startswith("@"):  # Unmoderate
-				target = input("Enter username to unmoderate: ")
-				if send_message(sock, username, "3", [target]):
-					print(f"Unmoderation request for {target} sent")
-
-			elif cmd == "4" and username.startswith("@"):  # Kick
-				target = input("Enter username to kick: ")
-				if send_message(sock, username, "4", [target]):
-					print(f"Kick request for {target} sent")
-
-			elif cmd == "5" and username.startswith("@"):  # Mute
-				target = input("Enter username to mute: ")
-				if send_message(sock, username, "5", [target]):
-					print(f"Mute request for {target} sent")
-
-			elif cmd == "6" and username.startswith("@"):  # Unmute
-				target = input("Enter username to unmute: ")
-				if send_message(sock, username, "6", [target]):
-					print(f"Unmute request for {target} sent")
-
-			elif cmd == "7":  # Private DM
-				target = input("Enter recipient username: ")
-				message = input("Enter private message: ")
-				if send_message(sock, username, "7", [target, message]):
-					print(f"Private message to {target} sent")
-
-			elif cmd == "8":  # Quit
-				if send_message(sock, username, "8", []):
-					print("Quit request sent")
-					return
-
-			else:
-				print("Invalid command or insufficient permissions")
-
-			# Check for incoming messages
-			response = receive_response(sock)
-			if response:
-				_, message = response
-				print(f"\n[Server] {message.decode()}")
-
-		except KeyboardInterrupt:
-			print("\nDisconnecting...")
-			if send_message(sock, username, "8", []):  # Graceful quit
-				return
-			break
+def send_quit(sock: socket.socket, username: str) -> bool:
+	"""Command 8: Quit with no arguments"""
+	try:
+		sock.send(format_message(username, "8", []))
+		return True
+	except:
+		return False
 
 
 def main():
-	logging.basicConfig(level=logging.INFO)
-
-	# Connect to server
-	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	sock = socket.socket()
 	try:
 		sock.connect((SERVER_IP, SERVER_PORT))
-		print(f"Connected to server at {SERVER_IP}:{SERVER_PORT}")
 	except Exception as e:
-		logging.error(f"Connection failed: {e}")
+		print(f"Connection failed: {e}")
 		return
 
-	# Login
-	username = input("Enter your username: ")
-	if not send_message(sock, username, "0", []):
+	# Get username (blocking input is fine here)
+	username = input("Enter username: ")
+	if not username or any(c in username for c in ('@', ' ')):
+		print("Invalid username (no @ or spaces)")
+		sock.close()
+		return
+
+	if not send_login(sock, username):
 		print("Login failed")
 		sock.close()
 		return
 
-	# Get login response
-	response = receive_response(sock)
-	if not response or b"successful" not in response[1]:
-		print("Login rejected:", response[1].decode() if response else "No response")
-		sock.close()
-		return
+	print("\nConnected! Commands:")
+	print("/msg [text] - Public message")
+	print("/dm [user] [text] - Private message")
+	print("/quit - Exit")
+	print("> ", end='', flush=True)
 
-	print("Login successful!")
+	input_buffer = ""
+	while True:
+		# Handle incoming messages (simplified)
+		try:
+			data = sock.recv(1024)
+			if data:
+				print(f"\n{data.decode()}\n> ", end='', flush=True)
+		except BlockingIOError:
+			pass
 
-	# Start command loop
-	try:
-		handle_user_commands(sock, username)
-	finally:
-		sock.close()
-		print("Disconnected from server")
+		# Non-blocking input handling
+		if msvcrt.kbhit():
+			char = msvcrt.getch().decode(errors='ignore')
+
+			if char == '\r':  # Enter
+				if input_buffer.startswith('/'):
+					parts = input_buffer[1:].split(maxsplit=2)
+					if parts and parts[0] == "quit":
+						send_quit(sock, username)
+						break
+					elif len(parts) >= 2 and parts[0] == "dm":
+						send_private_message(sock, username, parts[1], parts[2] if len(parts) > 2 else "")
+					elif parts and parts[0] == "msg":
+						send_public_message(sock, username, parts[1] if len(parts) > 1 else "")
+				elif input_buffer:
+					send_public_message(sock, username, input_buffer)
+				input_buffer = ""
+				print("\n> ", end='', flush=True)
+			elif char == '\x1b':  # ESC
+				send_quit(sock, username)
+				break
+			elif char == '\x08':  # Backspace
+				input_buffer = input_buffer[:-1]
+				print("\b \b", end='', flush=True)
+			else:
+				input_buffer += char
+				print(char, end='', flush=True)
+
+	sock.close()
+	print("\nDisconnected")
 
 
 if __name__ == '__main__':

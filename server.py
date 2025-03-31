@@ -145,6 +145,94 @@ def parse_message(receiving_socket) -> Tuple[str, str, List[str]]:
 		raise MessageParseError(f"Invalid encoding in message: {str(e)}")
 
 
+def login(users, name, wlist, sock, first_login):
+	if any(variant in users for variant in {name, f"@{name}", f"{name} ", f"@{name} "}):
+		unicast(sock, b"username is taken")
+	else:
+		if first_login:
+			name = "@" + name
+			first_login = False
+			logging.info(f"First user {name} became moderator")
+		users[name] = sock
+		unicast(sock, b"login successful")
+		broadcast(wlist, f"{name} has joined".encode(), sender=sock)
+
+
+def public_message(name, users, sock, wlist, args):
+	if f"{name} " in users:  # Check if muted
+		unicast(sock, b"you are currently muted")
+	elif name.startswith("@"):  # Moderator message
+		broadcast(wlist, f"[MOD] {name}: {args[0]}".encode(), sender=sock)
+	else:
+		broadcast(wlist, f"{name}: {args[0]}".encode(), sender=sock)
+
+
+def moderate(args, users, wlist, sock):
+	target = args[0]
+	if target in users and not target.startswith("@"):
+		users[f"@{target}"] = users.pop(target)
+		broadcast(wlist, f"{target} is now a moderator".encode())
+	else:
+		unicast(sock, b"invalid target for moderation")
+
+
+def unmoderate(args, sock, users, wlist):
+	target = args[0]
+	if f"@{target}" in users:
+		users[target] = users.pop(f"@{target}")
+		broadcast(wlist, f"{target} is no longer a moderator".encode())
+	else:
+		unicast(sock, b"target is not a moderator")
+
+
+def kick(args, users, client_sockets, wlist, sock):
+	target = args[0]
+	if target in users and not target.startswith("@"):  # Can't kick other mods
+		users[target].close()
+		client_sockets.remove(users[target])
+		users.pop(target)
+		broadcast(wlist, f"{target} has been kicked".encode())
+	else:
+		unicast(sock, b"invalid kick target")
+
+
+def mute(args, users, wlist, sock):
+	target = args[0]
+	if target in users and not target.endswith(" ") and not target.startswith("@"):
+		users[f"{target} "] = users.pop(target)
+		broadcast(wlist, f"{target} has been muted".encode())
+	else:
+		unicast(sock, b"invalid mute target")
+
+
+# 6 - Unmute (remove space suffix)
+def unmute(args, users, wlist, sock):
+	target = args[0]
+	if f"{target} " in users:
+		users[target] = users.pop(f"{target} ")
+		broadcast(wlist, f"{target} has been unmuted".encode())
+	else:
+		unicast(sock, b"target is not muted")
+
+
+def private_message(args, users, name, sock):
+	target = args[0]
+	message = args[1]
+	if target in users:
+		unicast(users[target], f"[DM from {name}] {message}".encode())
+		unicast(sock, f"[DM to {target}] {message}".encode())
+	else:
+		unicast(sock, b"user not found")
+
+
+def quit_chat(name, users, sock, client_sockets, wlist):
+	if name in users:
+		users.pop(name)
+	sock.close()
+	client_sockets.remove(sock)
+	broadcast(wlist, f"{name} has left".encode())
+
+
 def main():
 	logging.info("Starting server...")
 	server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -187,90 +275,39 @@ def main():
 			try:
 				# 0 - Login
 				if command == "0":
-					if any(variant in users for variant in {name, f"@{name}", f"{name} ", f"@{name} "}):
-						unicast(sock, b"username is taken")
-					else:
-						if first_login:
-							name = "@" + name
-							first_login = False
-							logging.info(f"First user {name} became moderator")
-						users[name] = sock
-						unicast(sock, b"login successful")
-						broadcast(wlist, f"{name} has joined".encode(), sender=sock)
+					login(users, name, wlist, sock, first_login)
 
 				# 1 - Public message
 				elif command == "1":
-					if f"{name} " in users:  # Check if muted
-						unicast(sock, b"you are currently muted")
-					elif name.startswith("@"):  # Moderator message
-						broadcast(wlist, f"[MOD] {name}: {args[0]}".encode(), sender=sock)
-					else:
-						broadcast(wlist, f"{name}: {args[0]}".encode(), sender=sock)
+					public_message(name, users, sock, wlist, args)
 
 				# 2 - Moderate (add @ prefix)
 				elif command == "2" and name.startswith("@"):
-					target = args[0]
-					if target in users and not target.startswith("@"):
-						users[f"@{target}"] = users.pop(target)
-						broadcast(wlist, f"{target} is now a moderator".encode())
-					else:
-						unicast(sock, b"invalid target for moderation")
+					moderate(args, users, wlist, sock)
 
 				# 3 - Unmoderate (remove @ prefix)
 				elif command == "3" and name.startswith("@"):
-					target = args[0]
-					if f"@{target}" in users:
-						users[target] = users.pop(f"@{target}")
-						broadcast(wlist, f"{target} is no longer a moderator".encode())
-					else:
-						unicast(sock, b"target is not a moderator")
+					unmoderate(args, sock, users, wlist)
 
 				# 4 - Kick
 				elif command == "4" and name.startswith("@"):
-					target = args[0]
-					if target in users and not target.startswith("@"):  # Can't kick other mods
-						users[target].close()
-						client_sockets.remove(users[target])
-						users.pop(target)
-						broadcast(wlist, f"{target} has been kicked".encode())
-					else:
-						unicast(sock, b"invalid kick target")
+					kick(args, users, client_sockets, wlist, sock)
 
 				# 5 - Mute (add space suffix)
 				elif command == "5" and name.startswith("@"):
-					target = args[0]
-					if target in users and not target.endswith(" ") and not target.startswith("@"):
-						users[f"{target} "] = users.pop(target)
-						broadcast(wlist, f"{target} has been muted".encode())
-					else:
-						unicast(sock, b"invalid mute target")
+					mute(args, users, wlist, sock)
 
 				# 6 - Unmute (remove space suffix)
 				elif command == "6" and name.startswith("@"):
-					target = args[0]
-					if f"{target} " in users:
-						users[target] = users.pop(f"{target} ")
-						broadcast(wlist, f"{target} has been unmuted".encode())
-					else:
-						unicast(sock, b"target is not muted")
+					unmute(args, users, wlist, sock)
 
 				# 7 - Private DM
 				elif command == "7":
-					target = args[0]
-					message = args[1]
-					if target in users:
-						unicast(users[target], f"[DM from {name}] {message}".encode())
-						unicast(sock, f"[DM to {target}] {message}".encode())
-					else:
-						unicast(sock, b"user not found")
+					private_message(args, users, name, sock)
 
 				# 8 - Quit
 				elif command == "8":
-					if name in users:
-						users.pop(name)
-					sock.close()
-					client_sockets.remove(sock)
-					broadcast(wlist, f"{name} has left".encode())
+					quit_chat(name, users, sock, client_sockets, wlist)
 
 			except (ConnectionError, OSError) as e:
 				logging.error(f"Error processing command: {e}")
