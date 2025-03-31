@@ -106,6 +106,7 @@ def main(addr=("0.0.0.0", 5555)):
                 print_client_sockets(client_sockets)
             else:
                 status, name, command_num, args = parse_message(current_socket)
+
                 # need to add function for each command num
                 # messages_to_send.append((current_socket, data))
 
